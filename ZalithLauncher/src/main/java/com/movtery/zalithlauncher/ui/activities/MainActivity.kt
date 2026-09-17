@@ -29,6 +29,7 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
@@ -140,7 +141,6 @@ class MainActivity : BaseAppCompatActivity() {
     private var isCaptureKey = false
     private var fmEventRegistrar: FileManagerEventRegistrar? = null
 
-    // ==== ДОБАВЛЕНО: статистика времени в игре ====
     private var gameStartTime: Long = 0L
     private var totalPlayTimeSeconds: Long = 0L
     private var isGameRunning = false
@@ -204,7 +204,6 @@ class MainActivity : BaseAppCompatActivity() {
                         showDownloadPlugins(event.link)
                     }
                     is EventViewModel.Event.Launch.Game -> {
-                        // ==== ДОБАВЛЕНО: старт таймера ====
                         if (!isGameRunning) {
                             isGameRunning = true
                             gameStartTime = System.currentTimeMillis()
@@ -309,7 +308,6 @@ class MainActivity : BaseAppCompatActivity() {
                         festivals = festivals
                     )
 
-                    // ==== ДОБАВЛЕНО: надпись TikTok и статистика времени ====
                     Column(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -500,7 +498,6 @@ class MainActivity : BaseAppCompatActivity() {
         }
     }
 
-    // ==== ДОБАВЛЕНО: функция форматирования времени ====
     private fun formatPlayTime(): String {
         val total = if (isGameRunning) {
             totalPlayTimeSeconds + (System.currentTimeMillis() - gameStartTime) / 1000
