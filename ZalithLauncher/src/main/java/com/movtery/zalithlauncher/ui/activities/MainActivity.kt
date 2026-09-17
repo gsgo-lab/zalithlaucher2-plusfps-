@@ -33,10 +33,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,15 +56,13 @@ import com.movtery.zalithlauncher.R
 import com.movtery.zalithlauncher.context.COPY_LABEL_LINK
 import com.movtery.zalithlauncher.coroutine.Task
 import com.movtery.zalithlauncher.coroutine.TaskSystem
-import com.movtery.zalithlauncher.filemanager.FileManagerLauncher
-import com.movtery.zalithlauncher.filemanager.events.FileManagerEvent
-import com.movtery.zalithlauncher.filemanager.events.FileManagerEventRegistrar
 import com.movtery.zalithlauncher.game.control.ControlManager
-import com.movtery.zalithlauncher.game.path.getVersionsHome
 import com.movtery.zalithlauncher.game.plugin.PluginLoader
+import com.movtery.zalithlauncher.game.plugin.driver.DriverPluginManager
 import com.movtery.zalithlauncher.game.renderer.Renderers
-import com.movtery.zalithlauncher.game.version.installed.Version
 import com.movtery.zalithlauncher.game.version.installed.VersionsManager
+import com.movtery.zalithlauncher.ui.activities.EXTRA_LAUNCH_VERSION
+import com.movtery.zalithlauncher.ui.activities.EXTRA_OPEN_LOG
 import com.movtery.zalithlauncher.notification.NotificationManager
 import com.movtery.zalithlauncher.path.PathManager
 import com.movtery.zalithlauncher.path.URL_SUPPORT
@@ -72,7 +77,6 @@ import com.movtery.zalithlauncher.ui.screens.NestedNavKey
 import com.movtery.zalithlauncher.ui.screens.NormalNavKey
 import com.movtery.zalithlauncher.ui.screens.content.elements.Background
 import com.movtery.zalithlauncher.ui.screens.content.elements.LaunchGameOperation
-import com.movtery.zalithlauncher.ui.screens.content.elements.TitleTaskFlowDialog
 import com.movtery.zalithlauncher.ui.screens.content.navigateToLogView
 import com.movtery.zalithlauncher.ui.screens.content.navigateToWeb
 import com.movtery.zalithlauncher.ui.screens.main.MainScreen
@@ -88,12 +92,14 @@ import com.movtery.zalithlauncher.ui.vulkan_checker.VulkanChecker
 import com.movtery.zalithlauncher.upgrade.TooFrequentOperationException
 import com.movtery.zalithlauncher.utils.compareLangTag
 import com.movtery.zalithlauncher.utils.copyText
+import com.movtery.zalithlauncher.utils.device.VulkanChecker
 import com.movtery.zalithlauncher.utils.festival.getTodayFestivals
 import com.movtery.zalithlauncher.utils.file.shareFile
 import com.movtery.zalithlauncher.utils.isChinese
 import com.movtery.zalithlauncher.utils.logging.Logger
 import com.movtery.zalithlauncher.utils.network.openLink
 import com.movtery.zalithlauncher.utils.network.openLinkInternal
+import com.movtery.zalithlauncher.utils.PlayerNoticeManager
 import com.movtery.zalithlauncher.utils.string.getMessageOrToString
 import com.movtery.zalithlauncher.viewmodel.BackgroundViewModel
 import com.movtery.zalithlauncher.viewmodel.ErrorViewModel
@@ -139,11 +145,6 @@ class MainActivity : BaseAppCompatActivity() {
     private val vulkanCheckerViewModel: VulkanCheckerViewModel by viewModels()
 
     private var isCaptureKey = false
-    private var fmEventRegistrar: FileManagerEventRegistrar? = null
-
-    private var gameStartTime: Long = 0L
-    private var totalPlayTimeSeconds: Long = 0L
-    private var isGameRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -152,8 +153,6 @@ class MainActivity : BaseAppCompatActivity() {
         Renderers.init()
         PluginLoader.loadAllPlugins(this, false)
         refreshData()
-
-        fmEventRegistrar = FileManagerEventRegistrar(this, ::onFileManagerEvent).also { it.start() }
 
         NotificationManager.initManager(this)
 
@@ -191,6 +190,12 @@ class MainActivity : BaseAppCompatActivity() {
                             this@MainActivity.openLink(url)
                         }
                     }
+                    is EventViewModel.Event.OpenWeb -> {
+                        val url = event.url
+                        withContext(Dispatchers.Main) {
+                            screenBackStackModel.mainScreen.backStack.navigateToWeb(url)
+                        }
+                    }
                     is EventViewModel.Event.CheckUpdate -> {
                         checkUpdate()
                     }
@@ -204,24 +209,12 @@ class MainActivity : BaseAppCompatActivity() {
                         showDownloadPlugins(event.link)
                     }
                     is EventViewModel.Event.Launch.Game -> {
-                        if (!isGameRunning) {
-                            isGameRunning = true
-                            gameStartTime = System.currentTimeMillis()
-                        }
                         launchGameViewModel.tryLaunch(event.version)
                     }
                     is EventViewModel.Event.Launch.PlayServer -> {
-                        if (!isGameRunning) {
-                            isGameRunning = true
-                            gameStartTime = System.currentTimeMillis()
-                        }
                         launchGameViewModel.quickPlayServer(event.version, event.address)
                     }
                     is EventViewModel.Event.Launch.PlaySave -> {
-                        if (!isGameRunning) {
-                            isGameRunning = true
-                            gameStartTime = System.currentTimeMillis()
-                        }
                         launchGameViewModel.quickPlaySave(event.version, event.saveName)
                     }
                     is EventViewModel.Event.LogShare.ShareGameLog -> {
@@ -248,21 +241,11 @@ class MainActivity : BaseAppCompatActivity() {
                         handleHomePageEvent(event0.key, event0.data)
                     }
                     is EventViewModel.Event.VulkanCheck -> {
-                        checkVulkan(event.version)
+                        checkVulkan()
                     }
-                    is EventViewModel.Event.ShowToast -> {
-                        Toast.makeText(
-                            this@MainActivity,
-                            event.text.toAndroidString(this@MainActivity),
-                            event.duration
-                        ).show()
-                    }
-                    is EventViewModel.Event.OpenFileManager -> {
-                        FileManagerLauncher.launch(
-                            context = this@MainActivity,
-                            rootPath = event.rootPath,
-                            currentPath = event.currentPath,
-                            logsDir = PathManager.DIR_LAUNCHER_LOGS.absolutePath
+                    is EventViewModel.Event.OpenLog -> {
+                        screenBackStackModel.mainScreen.backStack.navigateToLogView(
+                            logPath = event.path
                         )
                     }
                     else -> {
@@ -308,31 +291,25 @@ class MainActivity : BaseAppCompatActivity() {
                         festivals = festivals
                     )
 
-                    Column(
+                    // ==== TikTok ====
+                    Text(
+                        text = "TikTok: @zalithlauncher_nalune",
+                        color = Color.Cyan,
+                        fontSize = 14.sp,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .padding(16.dp)
-                    ) {
-                        Text(
-                            text = "TikTok: @zalithlauncher_nalune",
-                            color = Color.Cyan,
-                            fontSize = 14.sp
-                        )
-                        Text(
-                            text = "Время в игре: ${formatPlayTime()}",
-                            color = Color.White,
-                            fontSize = 14.sp
-                        )
-                    }
+                    )
 
                     LaunchGameOperation(
                         activity = this@MainActivity,
                         eventViewModel = eventViewModel,
-                        launchGameViewModel = launchGameViewModel,
+                        launchGameOperation = launchGameViewModel.launchGameOperation,
+                        updateOperation = { launchGameViewModel.updateOperation(it) },
                         exitActivity = {
                             this@MainActivity.finish()
                         },
-                        ensureVulkanSupported = vulkanCheckerViewModel::ensureSupported,
+                        waitForVulkanChecker = vulkanCheckerViewModel::waitForVulkanChecker,
                         submitError = {
                             errorViewModel.showError(it)
                         },
@@ -346,30 +323,8 @@ class MainActivity : BaseAppCompatActivity() {
                                 remove = NestedNavKey.VersionSettings::class,
                                 screenKey = NormalNavKey.VersionsManager
                             )
-                        },
-                        navigateToWeb = { url ->
-                            screenBackStackModel.mainScreen.backStack.navigateToWeb(url)
-                        },
-                        backToMain = {
-                            screenBackStackModel.mainScreen.clearWith(NormalNavKey.LauncherMain)
-                        },
-                        checkIfInWebScreen = {
-                            screenBackStackModel.mainScreen.currentKey is NormalNavKey.WebScreen
                         }
                     )
-
-                    val launchFlow by launchGameViewModel.launchFlow.collectAsStateWithLifecycle()
-                    val flow = launchFlow
-                    if (flow != null) {
-                        val launchTasks by flow.tasksFlow.collectAsStateWithLifecycle()
-                        TitleTaskFlowDialog(
-                            title = stringResource(R.string.main_launch_game),
-                            tasks = launchTasks,
-                            onCancel = {
-                                launchGameViewModel.cancel()
-                            }
-                        )
-                    }
                 }
 
                 if (!isImporting && finishedGame.state >= 100 && showSponsorship.state) {
@@ -485,29 +440,18 @@ class MainActivity : BaseAppCompatActivity() {
                     onChange = {
                         vulkanCheckerViewModel.changeOperation(it)
                     },
-                    startCheck = { version ->
-                        eventViewModel.sendEvent(
-                            EventViewModel.Event.VulkanCheck(version)
-                        )
+                    startCheck = {
+                        eventViewModel.sendEvent(EventViewModel.Event.VulkanCheck)
                     },
                     confirmResult = {
                         vulkanCheckerViewModel.resumeCont()
+                        AllSettings.autoVulkanChecker.save(false)
                     }
                 )
+
+                PlayerNoticeDialog()
             }
         }
-    }
-
-    private fun formatPlayTime(): String {
-        val total = if (isGameRunning) {
-            totalPlayTimeSeconds + (System.currentTimeMillis() - gameStartTime) / 1000
-        } else {
-            totalPlayTimeSeconds
-        }
-        val hours = total / 3600
-        val minutes = (total % 3600) / 60
-        val seconds = total % 60
-        return "%02d:%02d:%02d".format(hours, minutes, seconds)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -517,26 +461,17 @@ class MainActivity : BaseAppCompatActivity() {
         PluginLoader.loadAllPlugins(this, true)
     }
 
-    override fun onDestroy() {
-        fmEventRegistrar?.stop()
-        fmEventRegistrar = null
-        super.onDestroy()
-    }
+    private suspend fun checkVulkan() {
+        val driver = DriverPluginManager.getDriver()
+        val useTurnip = !(AllSettings.zinkPreferSystemDriver.getValue() || driver.isLauncher)
 
-    private fun onFileManagerEvent(event: FileManagerEvent) {
-        val versionsHome = File(getVersionsHome()).absolutePath
-        val touchesVersions = event.changedDirs.any { dir ->
-            val normalized = File(dir).absolutePath
-            normalized == versionsHome || normalized.startsWith("$versionsHome${File.separator}")
-        }
-        if (touchesVersions) {
-            VersionsManager.refresh("[FileManager] ${event.type.name}")
-        }
-    }
-
-    private suspend fun checkVulkan(version: Version) {
         withContext(Dispatchers.Main) {
-            val (result, useTurnip) = vulkanCheckerViewModel.check(version)
+            val result = if (useTurnip) {
+                val tempDir = File(PathManager.DIR_CACHE, "vulkan_temp")
+                VulkanChecker.checkCapabilities(null, driver.path, tempDir.absolutePath)
+            } else {
+                VulkanChecker.checkCapabilities(null, null, null)
+            }
             vulkanCheckerViewModel.changeOperation(VCOperation.Result(result, useTurnip))
         }
     }
@@ -742,6 +677,24 @@ class MainActivity : BaseAppCompatActivity() {
     private fun handleImportIfNeeded(intent: Intent?): Boolean {
         if (intent == null) return false
 
+        val logPath = intent.getStringExtra(EXTRA_OPEN_LOG)
+        if (logPath != null) {
+            intent.removeExtra(EXTRA_OPEN_LOG)
+            eventViewModel.sendEvent(EventViewModel.Event.OpenLog(logPath))
+            return true
+        }
+
+        val versionName = intent.getStringExtra(EXTRA_LAUNCH_VERSION)
+        if (versionName != null) {
+            intent.removeExtra(EXTRA_LAUNCH_VERSION)
+            val version = VersionsManager.getVersion(versionName)
+            if (version != null) {
+                VersionsManager.saveVersion(version)
+                launchGameViewModel.tryLaunch(version)
+            }
+            return true
+        }
+
         val type = intent.getStringExtra(EXTRA_IMPORT_TYPE) ?: return false
 
         val importing = when (type) {
@@ -798,6 +751,13 @@ class MainActivity : BaseAppCompatActivity() {
         ControlManager.checkDefaultAndRefresh(this@MainActivity)
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isFinishing) {
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+    }
+
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (isCaptureKey) {
@@ -806,5 +766,52 @@ class MainActivity : BaseAppCompatActivity() {
             return true
         }
         return super.dispatchKeyEvent(event)
+    }
+}
+
+@Composable
+private fun PlayerNoticeDialog() {
+    var content by remember { mutableStateOf("") }
+    var isDismissed by remember { mutableStateOf(true) }
+
+    suspend fun fetch() {
+        val notice = PlayerNoticeManager.fetchNotice()
+        if (notice.isNotEmpty()) {
+            if (PlayerNoticeManager.isDismissed(notice)) {
+                if (content != notice) {
+                    isDismissed = false
+                }
+                content = notice
+            } else {
+                content = notice
+                isDismissed = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        fetch()
+        while (true) {
+            delay(10_000)
+            fetch()
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            fetch()
+        }
+    }
+
+    if (content.isNotEmpty() && !isDismissed) {
+        SimpleAlertDialog(
+            title = stringResource(R.string.generic_info),
+            text = content,
+            onDismiss = {
+                PlayerNoticeManager.dismiss(content)
+                isDismissed = true
+            }
+        )
     }
 }
